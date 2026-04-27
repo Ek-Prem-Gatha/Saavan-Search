@@ -773,6 +773,14 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
         });
       }
 
+      // register as a search source
+      // must call onResult exactly once.
+      if (api.search?.registerSource) {
+        api.search.registerSource(SOURCE_TYPE, (query, onResult) => {
+          this.handleSearchQuery(query, onResult);
+        });
+      }
+
       if (api.handleRequest) {
         api.handleRequest("searchCover", async (data) => {
           const { title, artist, trackId } = data;
@@ -2556,6 +2564,135 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
       this.navigateTo("playlist", playlistData, playlistData?.title || title);
     },
 
+    // search registry
+    // Called by the runtime when another plugin queries api.search.query
+    // must call onResult exactly once with status success, not_found,error
+
+    async handleSearchQuery(query, onResult) {
+      try {
+        const searchQuery = `${query.title} ${query.artist || ""}`.trim();
+
+        for (const provider of getProviderOrder()) {
+
+          //direct
+          if (provider === "direct") {
+            try {
+              const data = await JioSaavnAPI.search_songs(searchQuery, 0, 10);
+              const items = (data.results || []).map(t => normalizeTrack({ ...t, _source: "direct" }));
+              const best  = this._pickBestMatch(items, query);
+              if (best) { onResult(this.saavnTrackToSearchResult(best.track, best.score)); return; }
+            } catch (e) {
+              console.warn("[JioSaavn] handleSearchQuery — direct failed:", e.message);
+            }
+          }
+
+          // pax
+          else if (provider === "pax") {
+            const paxAuth = getPaxAuth();
+            if (!paxAuth) continue;
+            try {
+              const url = `${PAX_BASE}/search?q=${encodeURIComponent(searchQuery)}`;
+              const res = await (this.api.fetch
+                ? this.api.fetch(url, { headers: { "Authorization": paxAuth } })
+                : fetch(url,          { headers: { "Authorization": paxAuth } }));
+              if (res.ok) {
+                const data  = await res.json();
+                const items = (data.results || []).map(t => normalizeTrack({ ...t, _source: "paxsenix" }));
+                const best  = this._pickBestMatch(items, query);
+                if (best) { onResult(this.saavnTrackToSearchResult(best.track, best.score)); return; }
+              }
+            } catch (e) {
+              console.warn("[JioSaavn] handleSearchQuery — Paxsenix failed:", e.message);
+            }
+          }
+
+          // vercel
+          else if (provider === "vercel") {
+            try {
+              const url = `${VERCEL_BASE}/search/songs?query=${encodeURIComponent(searchQuery)}&limit=10`;
+              const res = await (this.api.fetch ? this.api.fetch(url) : fetch(url));
+              if (res.ok) {
+                const data  = await res.json();
+                const items = (data?.data?.results || []).map(t => normalizeTrack({ ...t, _source: "vercel" }));
+                const best  = this._pickBestMatch(items, query);
+                if (best) { onResult(this.saavnTrackToSearchResult(best.track, best.score)); return; }
+              }
+            } catch (e) {
+              console.warn("[JioSaavn] handleSearchQuery — Vercel failed:", e.message);
+            }
+          }
+        }
+
+        // all providers exhausted
+        onResult({ sourceId: SOURCE_TYPE, status: "not_found" });
+      } catch (err) {
+        console.error("[JioSaavn] handleSearchQuery error:", err);
+        onResult({ sourceId: SOURCE_TYPE, status: "error", error: err });
+      }
+    },
+
+    // score all and return the best above threshold, or null.
+    _pickBestMatch(items, query) {
+      if (!items.length) return null;
+      const scored = items
+        .map(t => ({ track: t, score: this.calculateMatchScore(t, query) }))
+        .sort((a, b) => b.score - a.score);
+      return scored[0].score >= 60 ? scored[0] : null;
+    },
+
+    calculateMatchScore(track, query) {
+      let score = 0;
+      const n = (s) => (s || "").toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
+
+      const tTitle = n(track.title);
+      const qTitle = n(query.title);
+      if (tTitle === qTitle) score += 50;
+      else if (tTitle.includes(qTitle) || qTitle.includes(tTitle)) score += 30;
+
+      const tArtist = n(track.artist);
+      const qArtist = n(query.artist || "");
+      if (tArtist === qArtist) score += 30;
+      else if (tArtist.includes(qArtist) || qArtist.includes(tArtist)) score += 15;
+
+      if (query.duration_ms && track.duration) {
+        const diff = Math.abs(track.duration - query.duration_ms / 1000);
+        if (diff < 5) score += 20;
+        else if (diff < 10) score += 10;
+      }
+
+      return score;
+    },
+
+    // normalize  Saavn track
+    saavnTrackToSearchResult(track, score = 0) {
+      return {
+        sourceId:    SOURCE_TYPE,
+        status:      "success",
+        source_type: SOURCE_TYPE,
+        external_id: String(track.id),
+        title:       track.title,
+        artist:      track.artist   || null,
+        album:       track.albumTitle || null,
+        duration:    track.duration  || null,
+        cover_url:   track.cover     || null,
+        track_number: null,
+        disc_number:  null,
+        format:      track.highestQuality || DEFAULT_QUALITY,
+        bitrate:     null,
+        musicbrainz_recording_id: null,
+        metadata_json: {
+          language:        track.language        || null,
+          explicit_content: track.explicitContent || false,
+          has_lyrics:      track.hasLyrics        || false,
+          play_count:      track.playCount        || null,
+          highest_quality: track.highestQuality   || null,
+          provider:        track._source          || null,
+        },
+        score,
+        raw: track,
+      };
+    },
+
     // ── Actions ───────────────────────────────────────────────────────────────
 
     async playTrack(track) {
@@ -2594,17 +2731,7 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
       try {
         if (this.libraryTracks.has(String(track.id))) { this.showToast("Already in library"); return; }
         if (this.api?.library?.addExternalTrack) {
-          await this.api.library.addExternalTrack({
-            title:       track.title,
-            artist:      track.artist,
-            album:       track.albumTitle || null,
-            duration:    track.duration   || null,
-            cover_url:   track.cover      || null,
-            format:      DEFAULT_QUALITY,
-            bitrate:     null,
-            source_type: SOURCE_TYPE,
-            external_id: String(track.id)
-          });
+          await this.api.library.addExternalTrack(this.saavnTrackToSearchResult(track));
           this.libraryTracks.add(String(track.id));
           if (btn) { btn.classList.add("saved"); btn.innerHTML = ICONS.heart; btn.title = "Saved to Library"; }
           this.showToast(`Saved: ${track.title}`);
@@ -2636,17 +2763,10 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
 
         try {
           if (this.api?.library?.addExternalTrack) {
-            await this.api.library.addExternalTrack({
-              title:       track.title,
-              artist:      track.artist   || albumData?.artist || null,
-              album:       track.albumTitle || albumData?.title || null,
-              duration:    track.duration  || null,
-              cover_url:   track.cover || albumData?.cover || null,
-              format:      DEFAULT_QUALITY,
-              bitrate:     null,
-              source_type: SOURCE_TYPE,
-              external_id: String(track.id),
-            });
+            const result = this.saavnTrackToSearchResult(
+              albumData ? { ...track, albumTitle: track.albumTitle || albumData.title, cover: track.cover || albumData.cover, artist: track.artist || albumData.artist } : track
+            );
+            await this.api.library.addExternalTrack(result);
             this.libraryTracks.add(String(track.id));
             savedCount++;
             const row = document.querySelector(`.jss-track-item[data-id="${track.id}"]`);
@@ -2766,33 +2886,6 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
       document.getElementById("jss-search-btn")?.remove();
       document.getElementById("jiosaavn-save-progress")?.remove();
     }
-  };
-
-  // ── Public API (permission-gated) ────────────────────────────────────────────
-  window.JioSaavnSearchAPI = {
-    searchCover: async (title, artist, trackId, callerPluginId) => {
-      const permissionManager = window.__PLUGIN_PERMISSION_MANAGER__;
-      if (!permissionManager) throw new Error("Permission system not initialized");
-      await permissionManager.validateAccess(callerPluginId, "JioSaavn Search", "searchCover");
-      return JioSaavnSearch.searchCoverForRPC(title, artist, trackId);
-    },
-
-    // Returns up to `limit` suggested tracks for a given JioSaavn song id.
-    // Uses the JioSaavn webradio API (two-step: create station → get songs).
-    // Requires the direct API path — station creation goes to jiosaavn.com/api.php directly.
-    // If the direct API is unavailable (CORS), this will fail gracefully and return [].
-    getSongSuggestions: async (songId, limit, callerPluginId) => {
-      const permissionManager = window.__PLUGIN_PERMISSION_MANAGER__;
-      if (!permissionManager) throw new Error("Permission system not initialized");
-      await permissionManager.validateAccess(callerPluginId, "JioSaavn Search", "getSongSuggestions");
-      try {
-        const songs = await JioSaavnAPI.get_song_suggestions(String(songId), limit || 10);
-        return songs.map(t => normalizeTrack({ ...t, _source: "direct" }));
-      } catch (e) {
-        console.error("[JioSaavn] getSongSuggestions failed:", e);
-        return [];
-      }
-    },
   };
 
   if (typeof Audion !== "undefined" && Audion.register) {
