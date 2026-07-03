@@ -781,10 +781,22 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
         });
       }
 
-      if (api.handleRequest) {
-        api.handleRequest("searchCover", async (data) => {
-          const { title, artist, trackId } = data;
-          return await this.searchCoverForRPC(title, artist, trackId);
+      // register as a cover source for the covers fan-out API
+      // handler must call onResult exactly once
+      if (api.covers?.registerSource) {
+        api.covers.registerSource(SOURCE_TYPE, (query, onResult) => {
+          this.searchCoverForRPC(query.title, query.artist || "", null)
+            .then(url => {
+              if (url) {
+                onResult({ sourceId: SOURCE_TYPE, status: "success", url, priority: 10 });
+              } else {
+                onResult({ sourceId: SOURCE_TYPE, status: "not_found" });
+              }
+            })
+            .catch(err => {
+              console.error("[JioSaavn] Cover source error:", err);
+              onResult({ sourceId: SOURCE_TYPE, status: "error", error: err });
+            });
         });
       }
     },
