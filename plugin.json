@@ -1,29 +1,44 @@
 {
-    "name": "Saavan Search",
-    "safe_name": "saavan-search",
-    "version": "0.1.2",
-    "author": "Golden Sparrow",
-    "description": "Search the Saavan",
-    "repo": "https://github.com/Ek-Prem-Gatha/Saavan-Search",
-    "type": "js",
-    "entry": "index.js",
-    "permissions": [
-      "network:fetch",
-      "ui:inject",
-      "player:control",
-      "library:write",
-      "library:read",
-      "settings:write",
-      "library:downloadTrack"
-    ],
-    "cross_plugin_access": [],
-    "ui_slots": [],
-    "category": "library",
-    "tags": [
-      "search",
-      "saavan",
-      "streaming",
-      "music"
-    ],
-    "license": "MIT"
-  }
+  "name": "Saavan Search",
+  "safe_name": "saavan-search",
+  "version": "1.5.0",
+  "author": "Golden Sparrow",
+  "description": "High-quality music streaming, catalog search, and metadata from JioSaavn.",
+  "repo": "https://github.com/Ek-Prem-Gatha/Saavan-Search",
+  "repository": "https://github.com/Ek-Prem-Gatha/Saavan-Search",
+  "manifest_url": null,
+  "type": "js",
+  "entry": "index.js",
+  "permissions": [
+    "network:fetch",
+    "ui:inject",
+    "player:control",
+    "player:read",
+    "library:write",
+    "library:read",
+    "settings:write",
+    "library:downloadTrack",
+    "storage:local"
+  ],
+  "cross_plugin_access": [],
+  "ui_slots": [
+    "playerbar:menu"
+  ],
+  "icon": null,
+  "icon_url": null,
+  "category": "streaming",
+  "provides": [
+    "stream",
+    "metadata"
+  ],
+  "tags": [
+    "search",
+    "saavan",
+    "jiosaavn",
+    "streaming",
+    "music",
+    "bollywood"
+  ],
+  "min_version": "1.5.0",
+  "license": "MIT"
+}

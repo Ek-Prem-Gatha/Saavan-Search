@@ -761,16 +761,148 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
       this.createPlayerBarButton();
       setTimeout(() => this.createPlayerBarButton(), 500);
 
-      if (api.stream?.registerResolver) {
+      // Register StreamProvider for Audion v1.5.0+ with resolveByQuery support
+      if (api.stream?.registerProvider) {
+        api.stream.registerProvider({
+          id: SOURCE_TYPE,
+          name: "JioSaavn",
+          version: "1.5.0",
+          description: "High quality 320kbps streams from JioSaavn",
+          getStream: async (songId, quality) => {
+            try {
+              const streamData = await this.fetchStream(songId);
+              return streamData?.url ? { url: streamData.url, format: "m4a", bitrate: 320000 } : null;
+            } catch (err) {
+              console.error("[JioSaavn] Stream resolve error:", err);
+              return null;
+            }
+          },
+          resolveByQuery: async (track, quality) => {
+            try {
+              const qTitle = typeof track === "string" ? track : track?.title || "";
+              const qArtist = typeof track === "object" ? track?.artist || "" : "";
+              const queryStr = `${qTitle} ${qArtist}`.trim();
+              if (!queryStr) return null;
+
+              let matchedTrack = null;
+              try {
+                const data = await JioSaavnAPI.search_songs(queryStr, 0, 5);
+                const items = (data?.results || []).map(t => normalizeTrack({ ...t, _source: "direct" }));
+                if (items.length > 0) matchedTrack = items[0];
+              } catch (e) {
+                // direct failed
+              }
+
+              if (matchedTrack && matchedTrack.id) {
+                const streamData = await this.fetchStream(matchedTrack.id);
+                return streamData?.url ? { url: streamData.url, format: "m4a", bitrate: 320000 } : null;
+              }
+              return null;
+            } catch (e) {
+              console.warn("[JioSaavn] resolveByQuery failed:", e);
+              return null;
+            }
+          }
+        });
+        console.log("[JioSaavn] StreamProvider 'jiosaavn' registered for v1.5.0+");
+      } else if (api.stream?.registerResolver) {
         api.stream.registerResolver(SOURCE_TYPE, async (externalId) => {
           try {
             const streamData = await this.fetchStream(externalId);
-            return streamData.url;
+            return streamData?.url || null;
           } catch (err) {
             console.error("[JioSaavn] Stream resolve error:", err);
             return null;
           }
         });
+      }
+
+      // Register MetadataProvider for Audion v1.5.0+
+      if (api.metadata?.registerProvider) {
+        api.metadata.registerProvider({
+          id: SOURCE_TYPE,
+          name: "JioSaavn",
+          version: "1.5.0",
+          description: "JioSaavn search provider for tracks, albums, and artists",
+          search: async (query, type = "all", page = 1) => {
+            try {
+              const tracks = [];
+              const albums = [];
+              const artists = [];
+              const offset = Math.max(0, (page - 1) * 20);
+
+              if (type === "all" || type === "track") {
+                try {
+                  const songData = await JioSaavnAPI.search_songs(query, offset, 20);
+                  (songData?.results || []).forEach(t => {
+                    const norm = normalizeTrack({ ...t, _source: "direct" });
+                    tracks.push({
+                      id: norm.id,
+                      external_id: norm.id,
+                      source_type: SOURCE_TYPE,
+                      provider_id: SOURCE_TYPE,
+                      title: norm.title,
+                      artist: norm.artist,
+                      album: norm.album,
+                      duration: norm.duration,
+                      cover_url: norm.cover_url,
+                      format: norm.format || "m4a",
+                      bitrate: norm.bitrate || 320000
+                    });
+                  });
+                } catch (e) {
+                  console.warn("[JioSaavn] Metadata song search failed:", e);
+                }
+              }
+
+              if (type === "all" || type === "album") {
+                try {
+                  const albumData = await JioSaavnAPI.search_albums(query, offset, 10);
+                  (albumData?.results || []).forEach(a => {
+                    const norm = normalizeAlbum({ ...a, _source: "direct" });
+                    albums.push({
+                      id: norm.id,
+                      provider_id: SOURCE_TYPE,
+                      source_type: SOURCE_TYPE,
+                      title: norm.title,
+                      artist: norm.artist,
+                      cover_url: norm.cover_url,
+                      year: norm.year,
+                      track_count: norm.track_count
+                    });
+                  });
+                } catch (e) {
+                  console.warn("[JioSaavn] Metadata album search failed:", e);
+                }
+              }
+
+              if (type === "all" || type === "artist") {
+                try {
+                  const artistData = await JioSaavnAPI.search_artists(query, offset, 10);
+                  (artistData?.results || []).forEach(art => {
+                    const norm = normalizeArtist({ ...art, _source: "direct" });
+                    artists.push({
+                      id: norm.id,
+                      provider_id: SOURCE_TYPE,
+                      source_type: SOURCE_TYPE,
+                      name: norm.name,
+                      avatar_url: norm.avatar_url,
+                      bio: norm.bio
+                    });
+                  });
+                } catch (e) {
+                  console.warn("[JioSaavn] Metadata artist search failed:", e);
+                }
+              }
+
+              return { tracks, albums, artists };
+            } catch (err) {
+              console.warn("[JioSaavn] Metadata search failed:", err);
+              return { tracks: [], albums: [], artists: [] };
+            }
+          }
+        });
+        console.log("[JioSaavn] MetadataProvider 'jiosaavn' registered for v1.5.0+");
       }
 
       // register as a search source
@@ -2892,6 +3024,23 @@ c.mode.CTRGladman=function(){var t=c.lib.BlockCipherMode.extend();function e(t){
     stop()    { this.close(); },
     destroy() {
       this.close();
+      if (this.api?.ui?.unregisterSlot) {
+        this.api.ui.unregisterSlot("playerbar:menu");
+      }
+      if (this.api?.stream?.unregisterProvider) {
+        this.api.stream.unregisterProvider(SOURCE_TYPE);
+      } else if (this.api?.stream?.unregisterResolver) {
+        this.api.stream.unregisterResolver(SOURCE_TYPE);
+      }
+      if (this.api?.metadata?.unregisterProvider) {
+        this.api.metadata.unregisterProvider(SOURCE_TYPE);
+      }
+      if (this.api?.covers?.unregisterSource) {
+        this.api.covers.unregisterSource(SOURCE_TYPE);
+      }
+      if (this.api?.search?.unregisterSource) {
+        this.api.search.unregisterSource(SOURCE_TYPE);
+      }
       document.getElementById("jiosaavn-search-styles-v1")?.remove();
       document.getElementById("jiosaavn-search-panel")?.remove();
       document.getElementById("jiosaavn-search-overlay")?.remove();
